@@ -1,2 +1,2 @@
-# cross-platform-file-monitoring
-Cross-Platform File Monitoring API
+# File Monitoring API
+File monitoring API implemented for Linux
