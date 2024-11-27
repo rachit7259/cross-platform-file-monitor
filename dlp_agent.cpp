@@ -5,12 +5,30 @@
 #include "cpp-httplib/httplib.h"
 #include <sys/inotify.h>
 #include <unordered_map>
+#include <ctime>
 
 using namespace std;
 
 //Config
 const int BUFFER_SIZE = 1024 * (sizeof(struct inotify_event) + 16);
 const string MONITOR_PATH = "./monitor";
+
+//Logging
+void logScanResult(const string &filePath, bool sensitiveDataFound)
+{
+    ofstream logFile("scan_log.txt", ios::app);
+
+    if(!logFile.is_open())
+    {
+        cerr << "Failed to open log file." << endl;
+        return;
+    }
+
+    time_t now = time(nullptr);
+
+    logFile << ctime(&now) << " - File: " << filePath
+        << " - Sensitive Content: " << (sensitiveDataFound ? "Yes" : "No") << endl;
+}
 
 //DLP logic: mock scanning for snesitive data
 bool scanFileForSensitiveData(const string &filePath)
@@ -95,7 +113,10 @@ void monitorFiles()
                     if(scanFileForSensitiveData(filePath))
                     {
                         cout << "Sensitive content detected in: " << filePath << endl;
+                        logScanResult(filePath, true);
                     }
+                    else
+                        logScanResult(filePath, false);
                 }
                 else if(event->mask & IN_MODIFY)
                 {
@@ -104,7 +125,10 @@ void monitorFiles()
                     if(scanFileForSensitiveData(filePath))
                     {
                         cout << "Sensitive content detected in: " << filePath << endl;
+                        logScanResult(filePath, true);
                     }
+                    else
+                        logScanResult(filePath, false);
                 }
                 else if(event->mask & IN_DELETE)
                 {
@@ -134,10 +158,12 @@ void startApiServer()
         if(scanFileForSensitiveData(filePath))
         {
             res.set_content("Sensitive content detected.", "text/plain");
+            logScanResult(filePath, true);
         }
         else
         {
             res.set_content("No sensitive content found.", "text/plain");
+            logScanResult(filePath, false);
         }
     });
 
