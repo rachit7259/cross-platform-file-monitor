@@ -23,13 +23,24 @@ bool scanFileForSensitiveData(const string &filePath)
         return false;
     }
 
+    // Define patterns for sensitive data
+    const vector<regex> patterns = {
+        regex(R"((\b\d{3}-\d{2}-\d{4}\b))"), // SSN
+        regex(R"((\b4[0-9]{12}(?:[0-9]{3}?\b)))"), // Credit Card
+        regex(R"(\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b)"), // Email
+        regex(R"(\bpassword\b)", regex_constants::icase) //password
+    };
+
     string line;
     
-    while(getline(file, line))
+    while (getline(file, line))
     {
-        if(line.find("password") != string::npos)
+        for (const auto &pattern : patterns)
         {
-            return true; //Detected sensitive content
+            if (regex_search(line, pattern))
+            {
+                return true; //Detected sensitive content
+            }
         }
     }
 
@@ -77,14 +88,27 @@ void monitorFiles()
             {
                 string filePath = MONITOR_PATH + "/" + event->name;
 
-                if (event->mask & IN_CREATE || event->mask & IN_MODIFY)
+                if (event->mask & IN_CREATE)
                 {
-                    cout << "FIle event detected: " << filePath << endl;
+                    cout << "File create event detected: " << filePath << endl;
 
                     if(scanFileForSensitiveData(filePath))
                     {
                         cout << "Sensitive content detected in: " << filePath << endl;
                     }
+                }
+                else if(event->mask & IN_MODIFY)
+                {
+                    cout << "File modify event detected: " << filePath << endl;
+
+                    if(scanFileForSensitiveData(filePath))
+                    {
+                        cout << "Sensitive content detected in: " << filePath << endl;
+                    }
+                }
+                else if(event->mask & IN_DELETE)
+                {
+                    cout << "File was deleted: " << filePath << endl;
                 }
             }
 
@@ -101,7 +125,7 @@ void startApiServer()
     httplib::Server svr;
 
     svr.Get("/status", [](const httplib::Request&, httplib::Response& res){
-        res.set_content("DLP Endpoint Agent is ruinning.", "text/plain");
+        res.set_content("DLP Endpoint Agent is running.", "text/plain");
     });
 
     svr.Post("/scan", [](const httplib::Request& req, httplib::Response& res) {
