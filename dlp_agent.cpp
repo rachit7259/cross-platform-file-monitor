@@ -6,12 +6,20 @@
 #include <sys/inotify.h>
 #include <unordered_map>
 #include <ctime>
+#include <queue>
+#include <mutex>
+#include <condition_variable>
 
 using namespace std;
 
 //Config
 const int BUFFER_SIZE = 1024 * (sizeof(struct inotify_event) + 16);
 const string MONITOR_PATH = "./monitor";
+
+queue<string> fileQueue;
+mutex queueMutex;
+condition_variable cv;
+//bool terminate = false;
 
 //Logging
 void logScanResult(const string &filePath, bool sensitiveDataFound)
@@ -65,6 +73,59 @@ bool scanFileForSensitiveData(const string &filePath)
     return false; //No sensitive content
 }
 
+//Async File Queue for scanning
+void enqueueFile(const string &filePath)
+{
+    lock_guard<mutex> lock(queueMutex);
+    fileQueue.push(filePath);
+    cout << "File enqueued: " << filePath << endl;
+    cv.notify_one();
+}
+
+void processFileQueue()
+{
+    while (true)
+    {
+        string filePath;
+
+        unique_lock<mutex> lock(queueMutex);
+
+        // Wait until the queue is not empty or the program signals termination
+        cv.wait(lock, [] {return !fileQueue.empty();});
+
+        // if(terminate)
+        //     break;
+
+        // Double-check to avoid issues with spurious wakeups
+        if (fileQueue.empty())
+            continue;
+
+        filePath = fileQueue.front();
+        fileQueue.pop();
+
+        //Process the file with error handling
+        try
+        {
+            bool sensitiveDataFound = scanFileForSensitiveData(filePath);
+            
+            cout << "File: " << filePath << " Sensitive data found: " 
+                << (sensitiveDataFound ? "Yes" : "No") << endl;
+
+            logScanResult(filePath, sensitiveDataFound);
+        }
+        catch(const exception& e)
+        {
+            cerr << "Error processing file " << filePath << ": " << e.what() << endl;
+        }
+        catch(...)
+        {
+            cerr << "Unknown error processing file " << filePath << endl;
+        }
+
+    }
+}
+
+
 //File monitoring function
 void monitorFiles()
 {
@@ -109,26 +170,12 @@ void monitorFiles()
                 if (event->mask & IN_CREATE)
                 {
                     cout << "File create event detected: " << filePath << endl;
-
-                    if(scanFileForSensitiveData(filePath))
-                    {
-                        cout << "Sensitive content detected in: " << filePath << endl;
-                        logScanResult(filePath, true);
-                    }
-                    else
-                        logScanResult(filePath, false);
+                    enqueueFile(filePath);
                 }
                 else if(event->mask & IN_MODIFY)
                 {
                     cout << "File modify event detected: " << filePath << endl;
-
-                    if(scanFileForSensitiveData(filePath))
-                    {
-                        cout << "Sensitive content detected in: " << filePath << endl;
-                        logScanResult(filePath, true);
-                    }
-                    else
-                        logScanResult(filePath, false);
+                    enqueueFile(filePath);
                 }
                 else if(event->mask & IN_DELETE)
                 {
@@ -174,6 +221,8 @@ void startApiServer()
 int main()
 {
     thread monitorThread(monitorFiles);
+
+    thread queueThread(processFileQueue);
 
     startApiServer();
 
