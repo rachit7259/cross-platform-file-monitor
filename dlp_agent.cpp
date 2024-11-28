@@ -21,6 +21,9 @@ mutex queueMutex;
 condition_variable cv;
 //bool terminate = false;
 
+unordered_map<string, bool> scanResults;
+mutex resultsMutex;
+
 //Logging
 void logScanResult(const string &filePath, bool sensitiveDataFound)
 {
@@ -38,7 +41,7 @@ void logScanResult(const string &filePath, bool sensitiveDataFound)
         << " - Sensitive Content: " << (sensitiveDataFound ? "Yes" : "No") << endl;
 }
 
-//DLP logic: mock scanning for snesitive data
+//DLP logic: mock scanning for sensitive data
 bool scanFileForSensitiveData(const string &filePath)
 {
     ifstream file(filePath);
@@ -82,38 +85,69 @@ void enqueueFile(const string &filePath)
     cv.notify_one();
 }
 
+//API endpoints for async file scanning
+void enqueueFileApi(const string &filePath)
+{
+    enqueueFile(filePath);
+
+    lock_guard<mutex> lock(resultsMutex);
+    scanResults[filePath] = false;
+}
+
+bool getScanResults(const string &filePath)
+{
+    lock_guard<mutex> lock(resultsMutex);
+
+    if(scanResults.find(filePath) != scanResults.end())
+    {
+        return scanResults[filePath];
+    }
+
+    return false;
+}
+
+//Update the results after Processing
+void updateScanResult (const string &filePath, bool result)
+{
+    lock_guard<mutex> lock(resultsMutex);
+    scanResults[filePath] = result;
+}
+
 void processFileQueue()
 {
     while (true)
     {
         string filePath;
 
-        unique_lock<mutex> lock(queueMutex);
+        {
+            unique_lock<mutex> lock(queueMutex);
 
-        // Wait until the queue is not empty or the program signals termination
-        cv.wait(lock, [] {return !fileQueue.empty();});
+            // Wait until the queue is not empty or the program signals termination
+            cv.wait(lock, [] {return !fileQueue.empty();});
 
-        // if(terminate)
-        //     break;
+            // if(terminate)
+            //     break;
 
-        // Double-check to avoid issues with spurious wakeups
-        if (fileQueue.empty())
-            continue;
+            // Double-check to avoid issues with spurious wakeups
+            if (fileQueue.empty())
+                continue;
 
-        filePath = fileQueue.front();
-        fileQueue.pop();
+            filePath = fileQueue.front();
+            fileQueue.pop();
+        }
 
         //Process the file with error handling
         try
         {
             bool sensitiveDataFound = scanFileForSensitiveData(filePath);
-            
+
             cout << "File: " << filePath << " Sensitive data found: " 
                 << (sensitiveDataFound ? "Yes" : "No") << endl;
 
+            updateScanResult(filePath, sensitiveDataFound);
             logScanResult(filePath, sensitiveDataFound);
         }
-        catch(const exception& e)
+        catch(const exception &e)
         {
             cerr << "Error processing file " << filePath << ": " << e.what() << endl;
         }
@@ -124,7 +158,6 @@ void processFileQueue()
 
     }
 }
-
 
 //File monitoring function
 void monitorFiles()
@@ -199,19 +232,54 @@ void startApiServer()
         res.set_content("DLP Endpoint Agent is running.", "text/plain");
     });
 
-    svr.Post("/scan", [](const httplib::Request& req, httplib::Response& res) {
-        string filePath = req.body; //Assuming body contains the file path
+    // svr.Post("/scan", [](const httplib::Request& req, httplib::Response& res) {
+    //     string filePath = req.body; //Assuming body contains the file path
 
-        if(scanFileForSensitiveData(filePath))
+    //     if(scanFileForSensitiveData(filePath))
+    //     {
+    //         res.set_content("Sensitive content detected.", "text/plain");
+    //         logScanResult(filePath, true);
+    //     }
+    //     else
+    //     {
+    //         res.set_content("No sensitive content found.", "text/plain");
+    //         logScanResult(filePath, false);
+    //     }
+    // });
+
+    svr.Post("/enqueue", [](const httplib::Request &req, httplib::Response &res) {
+        string filePath = req.body;
+        enqueueFileApi(filePath);
+        res.set_content("File enqueued for scanning", "text/plain");
+    });
+
+    svr.Get("/results", [](const httplib::Request &req, httplib::Response &res) {
+        string filePath = req.get_param_value("file");
+        bool result = getScanResults(filePath);
+        res.set_content(result ? "Sensitive content detected." : "No sensitive content found.", "text/plain");
+    });
+
+    svr.Get("/logs", [](const httplib::Request &, httplib::Response &res) {
+        ifstream logFile("scan_log.txt");
+        if(!logFile.is_open())
         {
-            res.set_content("Sensitive content detected.", "text/plain");
-            logScanResult(filePath, true);
+            res.set_content("Failed to open log file.", "text/plain");
+            return;
         }
-        else
+
+        ostringstream ss;
+        ss << logFile.rdbuf();
+        res.set_content(ss.str(), "text/plain");
+    });
+
+    svr.Post("/clear_logs", [](const httplib::Request &, httplib::Response &res) {
+        ofstream logFile("scan_log.txt", ios::trunc);
+        if(!logFile.is_open())
         {
-            res.set_content("No sensitive content found.", "text/plain");
-            logScanResult(filePath, false);
+            res.set_content("Failed to clear log file.", "text/plain");
+            return;
         }
+        res.set_content("Log file cleared.", "text/plain");
     });
 
     cout << "Starting API server on port 8080..." << endl;
@@ -220,13 +288,13 @@ void startApiServer()
 
 int main()
 {
-    thread monitorThread(monitorFiles);
-
     thread queueThread(processFileQueue);
+    thread monitorThread(monitorFiles);
 
     startApiServer();
 
     monitorThread.join();
+    queueThread.join();
 
     return 0;
 }
