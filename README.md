@@ -5,7 +5,6 @@ It's multi-threaded program which provides:
   * File Monitoring - platform-specific APIs for file monitoring.
     * Linux: Uses <code>inotify</code>
     * Windows: Uses <code>ReadDirectoryChangesW</code>
-    * macOS: Uses <code>FSEvents</code>
     
   * Content Scanning - Sensitive Data Patterns are defined using regular expressions(regex)
 
