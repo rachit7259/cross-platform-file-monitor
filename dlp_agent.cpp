@@ -12,6 +12,12 @@
 
 using namespace std;
 
+#if defined(_WIN32) || defined(_WIN64)
+    #define WINDOWS_PLATFORM
+#elif defined(__linux__)
+    #define LINUX_PLATFORM
+#endif
+
 //Config
 const int BUFFER_SIZE = 1024 * (sizeof(struct inotify_event) + 16);
 const string MONITOR_PATH = "./monitor";
@@ -80,6 +86,7 @@ bool scanFileForSensitiveData(const string &filePath)
 void enqueueFile(const string &filePath)
 {
     lock_guard<mutex> lock(queueMutex);
+    
     fileQueue.push(filePath);
     cout << "File enqueued: " << filePath << endl;
     cv.notify_one();
@@ -159,8 +166,7 @@ void processFileQueue()
     }
 }
 
-//File monitoring function
-void monitorFiles()
+void monitorFilesLinux()
 {
     int fd = inotify_init();
 
@@ -222,6 +228,95 @@ void monitorFiles()
 
     inotify_rm_watch(fd, wd);
     close(fd);
+}
+
+#ifdef WINDOWS_PLATFORM
+#include <windows.h>
+
+
+void monitorFilesWindows(const string &directory)
+{
+    HANDLE hDir = CreateFile( directory.c_str(),
+                            FILE_LIST_DIRECTORY,
+                            FILE_SHARED_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                            NULL,
+                            OPEN_EXISTING,
+                            FILE_FLAG_BACKUP_SEMANTICS,
+                            NULL);
+
+    if (hDir == INVALID_HANDLE_VALUE)
+    {
+        cerr << "Error operating directory handle: " << GetLastError() << endl;
+        return;        
+    }
+
+    const DWORD bufferSize = 1024 * 10;
+    vector<BYTE> buffer(bufferSize);
+    DWORD bytesReturned;
+
+    while (true)
+    {
+        if (ReadDirectoryChangesW( hDir,
+                                buffer.data(),
+                                bufferSize,
+                                TRUE, // Monitor subdirectories
+                                FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_LAST_WRITE,
+                                &bytesReturned,
+                                NULL,
+                                NULL))
+        {
+            DWORD offset = 0;
+            while (offset < bytesReturned) 
+            {
+                FILE_NOTIFY_INFORMATION *fni = (FILE_NOTIFY_INFORMATION *) &buffer[offset];
+                wstring fileName(fni->FileName, fni->FileNameLength / sizeof(WCHAR));
+
+                switch(fni->Action) {
+                    
+                    case FILE_ACTION_ADDED:
+                        wcout << L"File created: " << fileName << endl;
+                        break;
+                    
+                    case FILE_ACTION_MODIFIED:
+                        wcout << L"File modfied: " << fileName << endl;
+                        break;
+
+                    case FILE_ACTION_REMOVED:
+                        wcout << L"File deleted: " << fileName << endl;
+                        break;
+
+                    default:
+                        break;
+                }
+
+                offset += fni->NextEntryOffset;
+
+                if (fni->NextEntryOffset == 0)
+                    break;
+            }
+        }
+        else
+        {
+            cerr << "Error reading directory changes: " << GetLastError() << endl;
+            break;
+        }
+    }
+
+    CloseHandle(hDir);
+}
+#endif
+
+
+//File monitoring function
+void monitorFiles()
+{
+
+#ifdef LINUX_PLATFORM
+    monitorFilesLinux();
+#elif defined(WINDOWS_PLATFORM)
+    monitorFilesWindows(MONITOR_PATH);
+#endif
+    
 }
 
 void startApiServer()
