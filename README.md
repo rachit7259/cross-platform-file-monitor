@@ -17,7 +17,7 @@ It's multi-threaded program which provides:
 The program has the following capabilities:
   * Logging
   * Asynchronus File Scanning
-  * RESTful APIs
+  * RESTful APIs - tested using <code>curl</code>
     * <code>GET /status</code> - Check agent health.
     * <code>POST /enqueue</code> - Enqueue File for scanning.
     * <code>GET /results</code> - Get the scan report(s).
