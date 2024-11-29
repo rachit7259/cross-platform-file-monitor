@@ -30,6 +30,9 @@ condition_variable cv;
 unordered_map<string, bool> scanResults;
 mutex resultsMutex;
 
+//Define secure token
+const string API_TOKEN = "secure-token-123456";
+
 //Logging
 void logScanResult(const string &filePath, bool sensitiveDataFound)
 {
@@ -101,16 +104,44 @@ void enqueueFileApi(const string &filePath)
     scanResults[filePath] = false;
 }
 
-bool getScanResults(const string &filePath)
+void getScanResults(const string &filePath, httplib::Response &res)
 {
     lock_guard<mutex> lock(resultsMutex);
+    bool sensitiveDataFound;
 
-    if(scanResults.find(filePath) != scanResults.end())
+    if(&filePath != nullptr)
     {
-        return scanResults[filePath];
+        if(scanResults.find(filePath) != scanResults.end())
+        {
+            sensitiveDataFound = scanResults[filePath];
+            res.set_content(
+                        "File: " + filePath + ", Sensitive Data Found: " +
+                        (sensitiveDataFound ? "Yes" : "No"), "text/plain");
+        }
+        else
+        {
+            res.set_content("No results found for the specified file path.", "text/plain");
+        }
     }
+    else
+    {
+        if(scanResults.empty())
+        {
+            res.set_content("No results found.", "text/plain");
+            return;
+        }
 
-    return false;
+        ostringstream oss;
+        for(const auto &[filePath, sensitiveDataFound] : scanResults)
+        {
+            oss << "File: " << filePath << ", Sensitive Data Found: "
+                << (sensitiveDataFound ? "Yes" : "No") << "\n";
+        }
+        res.set_content(oss.str(), "text/plain");
+    }
+    
+
+    return;
 }
 
 //Update the results after Processing
@@ -319,11 +350,29 @@ void monitorFiles()
     
 }
 
+//Authentication funciton
+bool authenticate(const httplib::Request &req)
+{
+    if(req.has_header("Authorization"))
+    {
+        auto token = req.get_header_value("Authorization");
+        return token == "Bearer " + API_TOKEN;
+    }
+
+    return false;
+}
+
 void startApiServer()
 {
     httplib::Server svr;
 
-    svr.Get("/status", [](const httplib::Request&, httplib::Response& res){
+    svr.Get("/status", [](const httplib::Request &req, httplib::Response &res){
+        if(!authenticate(req))
+        {
+            res.status = 401;
+            res.set_content("Unauthorized","text/plain");
+            return;
+        }
         res.set_content("DLP Endpoint Agent is running.", "text/plain");
     });
 
@@ -349,9 +398,24 @@ void startApiServer()
     });
 
     svr.Get("/results", [](const httplib::Request &req, httplib::Response &res) {
-        string filePath = req.get_param_value("file");
-        bool result = getScanResults(filePath);
-        res.set_content(result ? "Sensitive content detected." : "No sensitive content found.", "text/plain");
+        if(!authenticate(req))
+        {
+            res.status = 401;
+            res.set_content("Unauthorized","text/plain");
+            return;
+        }
+
+        if(req.has_param("file"))
+        {
+            string filePath = req.get_param_value("file");
+            getScanResults(filePath, res);
+            //res.set_content(result ? "Sensitive content detected." : "No sensitive content found.", "text/plain");
+        }
+        else
+        {
+            getScanResults(NULL, res);
+        }
+        return;
     });
 
     svr.Get("/logs", [](const httplib::Request &, httplib::Response &res) {
